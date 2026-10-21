@@ -10,8 +10,8 @@
 
 //#define SPLASH_DEBUG1 // trace splash visualization
 //#define SPLASH_DEBUG2 // plane splash visualization
-#define SPLASH_DEBUG3 // points visualization
-//#define SPLASH_DEBUG4 // test visualization
+//define SPLASH_DEBUG3 // points visualization
+#define SPLASH_DEBUG4 // test visualization
 //#define SPLASH_DEBUG5 // trace/face count
 
 #ifdef SPLASH_DEBUG5
