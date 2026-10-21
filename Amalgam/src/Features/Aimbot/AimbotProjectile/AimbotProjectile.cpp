@@ -1323,6 +1323,20 @@ bool CAimbotProjectile::TestAngle(const Vec3& vPoint, const Vec3& vAngles, int i
 				CGameTrace trace2 = {};
 				SDK::Trace(trace.endpos + trace.plane.normal * m_tInfo.m_flNormalOffset, tTarget.m_vPos + m_tInfo.m_vTargetEye, MASK_SHOT, &filter, &trace2);
 				bValid = trace2.fraction == 1.f;
+								// experimental: also accept the shot if the explosion can see the target's body center or feet, not only the eye
+				constexpr bool bExtraLos = true; // set to false to go back to the original eye-only check
+				if (bExtraLos && !bValid)
+				{
+					const Vec3 vBurst = trace.endpos + trace.plane.normal * m_tInfo.m_flNormalOffset;
+					const float flCenterZ = (tTarget.m_pEntity->m_vecMins().z + tTarget.m_pEntity->m_vecMaxs().z) * 0.5f;
+					for (float flZ : { flCenterZ, 8.f })
+					{
+						SDK::Trace(vBurst, tTarget.m_vPos + Vec3(0.f, 0.f, flZ), MASK_SHOT, &filter, &trace2);
+						bValid = trace2.fraction == 1.f;
+						if (bValid)
+							break;
+					}
+				}
 #ifdef SPLASH_DEBUG5
 				s_mTraceCount[__FUNCTION__": splash eye trace"]++;
 #endif
