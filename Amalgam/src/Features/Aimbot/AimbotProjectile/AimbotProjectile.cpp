@@ -755,6 +755,49 @@ void CAimbotProjectile::SetupSplashPoints(Vec3& vOrigin, std::vector<Setup_t>& v
 //			F::World.DrawFace(tFace, DrawTypeEnum::Edges | DrawTypeEnum::Faces);
 //#endif
 		}
+		// ray scan: sweep hull traces from the shoot position through a cone around the target,
+	// so narrow gaps are found by aim angle instead of by luck. the pattern is rotated randomly every call,
+	// so repeated ticks cover the gaps between rays. direct (no gravity) projectiles only.
+	if (!m_tInfo.m_flGravity)
+	{
+		constexpr int iRays = 192; // more rays = tighter gaps found, but more traces per tick
+		constexpr float flMaxTan = 0.7f; // limits the cone to about 35 degrees
+
+		Vec3 vToTarget = vTargetCenter - m_tInfo.m_vLocalEye;
+		float flDist = vToTarget.Length();
+		if (flDist > 1.f)
+		{
+			Vec3 vBaseForward, vBaseRight, vBaseUp;
+			Math::AngleVectors(Math::VectorAngles(vToTarget), &vBaseForward, &vBaseRight, &vBaseUp);
+
+			float flTan = std::min(flRadius / flDist, flMaxTan);
+			float flGolden = Math::PI * (3.f - sqrtf(5.f));
+			float flRotate = SDK::StdRandomFloat(0.f, 2.f * Math::PI);
+			float flRadiusSqr = flRadius * flRadius;
+
+			CGameTrace tRay = {}, tVis = {};
+			for (int n = 0; n < iRays; n++)
+			{
+				float flTheta = flGolden * n + flRotate, flRho = flTan * sqrtf((n + 0.5f) / iRays);
+				Vec3 vDir = (vBaseForward + vBaseRight * (cosf(flTheta) * flRho) + vBaseUp * (sinf(flTheta) * flRho)).Normalized();
+
+				Vec3 vForward, vRight, vUp; Math::AngleVectors(Math::VectorAngles(vDir), &vForward, &vRight, &vUp);
+				Vec3 vShootPos = m_tInfo.m_vLocalEye + vForward * m_tInfo.m_vOffset.x + vRight * m_tInfo.m_vOffset.y + vUp * m_tInfo.m_vOffset.z;
+
+				SDK::TraceHull(vShootPos, vShootPos + vForward * (flDist + flRadius), -m_tInfo.m_vHull, m_tInfo.m_vHull, MASK_SOLID, &filter, &tRay);
+				if (tRay.startsolid || !tRay.m_pEnt || tRay.fraction == 1.f || tRay.surface.flags & SURF_SKY || !tRay.m_pEnt->GetAbsVelocity().IsZero())
+					continue;
+				if (tRay.endpos.DistToSqr(vTargetCenter) > flRadiusSqr)
+					continue;
+
+				SDK::Trace(tRay.endpos + tRay.plane.normal * m_tInfo.m_flNormalOffset, vTargetEye, MASK_SHOT, &filter, &tVis);
+				if (tVis.fraction != 1.f)
+					continue;
+
+				vSplashPoints.emplace_back(tRay.endpos);
+			}
+		}
+	}
 	}
 	
 	if (vSplashPoints.size() > 1)

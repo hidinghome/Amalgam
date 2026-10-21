@@ -157,6 +157,9 @@ std::vector<TickRecord*> CBacktrack::GetValidRecords(std::vector<TickRecord*>& v
 	{
 		for (auto pRecord : vRecords)
 		{
+			if (pRecord->m_bInvalid)
+				continue;
+
 			float flDelta = flCorrect - TICKS_TO_TIME(iServerTick - TIME_TO_TICKS(pRecord->m_flSimTime));
 			if (fabsf(flDelta) > GetWindow())
 				continue;
@@ -170,11 +173,14 @@ std::vector<TickRecord*> CBacktrack::GetValidRecords(std::vector<TickRecord*>& v
 		float flMinDelta = 0.2f;
 		for (auto pRecord : vRecords)
 		{
+			if (pRecord->m_bInvalid)
+				continue;
+
 			float flDelta = flCorrect - TICKS_TO_TIME(iServerTick - TIME_TO_TICKS(pRecord->m_flSimTime));
 			if (fabsf(flDelta) > flMinDelta)
 				continue;
 
-			flMinDelta = flDelta;
+			flMinDelta = fabsf(flDelta);
 			vReturn = { pRecord };
 		}
 	}
@@ -294,7 +300,7 @@ void CBacktrack::CleanRecords()
 
 		//const int iOldSize = pRecords.size();
 
-		const int flDeadtime = I::GlobalVars->curtime + GetReal() - m_flMaxUnlag; // int ???
+		const float flDeadtime = I::GlobalVars->curtime + GetReal() - m_flMaxUnlag; // int ???
 		if (vRecords.size() > 1 && vRecords.back().m_flSimTime == std::numeric_limits<float>::max())
 			vRecords.pop_back();
 		while (!vRecords.empty())
