@@ -10,7 +10,7 @@
 
 //#define SPLASH_DEBUG1 // trace splash visualization
 //#define SPLASH_DEBUG2 // plane splash visualization
-//#define SPLASH_DEBUG3 // points visualization
+#define SPLASH_DEBUG3 // points visualization
 //#define SPLASH_DEBUG4 // test visualization
 //#define SPLASH_DEBUG5 // trace/face count
 
@@ -770,7 +770,8 @@ void CAimbotProjectile::SetupSplashPoints(Vec3& vOrigin, std::vector<Setup_t>& v
 			Vec3 vBaseForward, vBaseRight, vBaseUp;
 			Math::AngleVectors(Math::VectorAngles(vToTarget), &vBaseForward, &vBaseRight, &vBaseUp);
 
-			float flTan = std::min(flRadius / flDist, flMaxTan);
+			float flTan = flDist > flRadius ? flRadius / sqrtf(flDist * flDist - flRadius * flRadius) : flMaxTan;
+                  flTan = std::min(flTan, flMaxTan);
 			float flGolden = Math::PI * (3.f - sqrtf(5.f));
 			float flRotate = SDK::StdRandomFloat(0.f, 2.f * Math::PI);
 			float flRadiusSqr = flRadius * flRadius;
