@@ -760,7 +760,7 @@ void CAimbotProjectile::SetupSplashPoints(Vec3& vOrigin, std::vector<Setup_t>& v
 	// so repeated ticks cover the gaps between rays. direct (no gravity) projectiles only.
 	if (!m_tInfo.m_flGravity)
 	{
-		constexpr int iRays = 192; // more rays = tighter gaps found, but more traces per tick
+		constexpr int iRays = 400; // more rays = tighter gaps found, but more traces per tick
 		constexpr float flMaxTan = 0.7f; // limits the cone to about 35 degrees
 
 		Vec3 vToTarget = vTargetCenter - m_tInfo.m_vLocalEye;
