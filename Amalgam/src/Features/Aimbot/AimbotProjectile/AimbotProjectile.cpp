@@ -11,7 +11,7 @@
 //#define SPLASH_DEBUG1 // trace splash visualization
 //#define SPLASH_DEBUG2 // plane splash visualization
 //define SPLASH_DEBUG3 // points visualization
-#define SPLASH_DEBUG4 // test visualization
+//#define SPLASH_DEBUG4 // test visualization
 //#define SPLASH_DEBUG5 // trace/face count
 
 #ifdef SPLASH_DEBUG5
@@ -760,7 +760,7 @@ void CAimbotProjectile::SetupSplashPoints(Vec3& vOrigin, std::vector<Setup_t>& v
 	// so repeated ticks cover the gaps between rays. direct (no gravity) projectiles only.
 	if (!m_tInfo.m_flGravity)
 	{
-		constexpr int iRays = 400; // more rays = tighter gaps found, but more traces per tick
+		constexpr int iRays = 600; // more rays = tighter gaps found, but more traces per tick
 		constexpr float flMaxTan = 0.7f; // limits the cone to about 35 degrees
 
 		Vec3 vToTarget = vTargetCenter - m_tInfo.m_vLocalEye;
@@ -1324,7 +1324,7 @@ bool CAimbotProjectile::TestAngle(const Vec3& vPoint, const Vec3& vAngles, int i
 				SDK::Trace(trace.endpos + trace.plane.normal * m_tInfo.m_flNormalOffset, tTarget.m_vPos + m_tInfo.m_vTargetEye, MASK_SHOT, &filter, &trace2);
 				bValid = trace2.fraction == 1.f;
 								// experimental: also accept the shot if the explosion can see the target's body center or feet, not only the eye
-				constexpr bool bExtraLos = true; // set to false to go back to the original eye-only check
+				constexpr bool bExtraLos = false; // set to false to go back to the original eye-only check
 				if (bExtraLos && !bValid)
 				{
 					const Vec3 vBurst = trace.endpos + trace.plane.normal * m_tInfo.m_flNormalOffset;
