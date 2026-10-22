@@ -1,5 +1,6 @@
 #include "AimbotProjectile.h"
 
+
 #include "../Aimbot.h"
 #include "../../Ticks/Ticks.h"
 #include "../../EnginePrediction/EnginePrediction.h"
@@ -7,6 +8,8 @@
 #include "../AutoAirblast/AutoAirblast.h"
 #include "../../AntiCheatCompatibility/AntiCheatCompatibility.h"
 #include <numeric>
+#include <map>
+#include <tuple>
 
 //#define SPLASH_DEBUG1 // trace splash visualization
 //#define SPLASH_DEBUG2 // plane splash visualization
@@ -755,6 +758,175 @@ void CAimbotProjectile::SetupSplashPoints(Vec3& vOrigin, std::vector<Setup_t>& v
 //			F::World.DrawFace(tFace, DrawTypeEnum::Edges | DrawTypeEnum::Faces);
 //#endif
 		}
+		// corner / edge scan (idea from the Nikogram fork): explosions that hug the corners and edges of faces that hide the target.
+		// random face sampling almost never lands on these spots, so they are sampled directly. direct (no gravity) projectiles only.
+		if (!m_tInfo.m_flGravity)
+		{
+			constexpr int iCap = 300; // trace budget for this scan: raise for more coverage, lower for speed
+			const float flRadiusSqr = flRadius * flRadius;
+			int iTraces = 0;
+
+			auto fKey = [](const Vec3& v) { return std::tuple<int, int, int>(int(std::lround(v.x * 8.f)), int(std::lround(v.y * 8.f)), int(std::lround(v.z * 8.f))); };
+			std::map<std::tuple<int, int, int>, std::vector<size_t>> mVertexFaces;
+			std::vector<uint8_t> vOccluder(vFaces.size(), 0);
+			for (size_t f = 0; f < vFaces.size(); f++)
+			{
+				const auto& tFace = vFaces[f];
+				if (tFace.m_vVertices.size() < 3 || tFace.m_iType == FaceTypeEnum::Displacement)
+					continue;
+				vOccluder[f] = tFace.m_vNormal.Dot(vTargetEye - tFace.m_vVertices[0]) < 0.f; // the target is behind this face
+				for (const auto& v : tFace.m_vVertices)
+					mVertexFaces[fKey(v)].push_back(f);
+			}
+
+			// every distinct face normal meeting at a vertex: the explosion can see around a corner from either side of it
+			auto fNormalsAt = [&](const Vec3& v, size_t iOwn, std::vector<Vec3>& vNormals)
+			{
+				vNormals.clear();
+				vNormals.push_back(vFaces[iOwn].m_vNormal);
+				auto it = mVertexFaces.find(fKey(v));
+				if (it == mVertexFaces.end())
+					return;
+				for (size_t f : it->second)
+				{
+					const Vec3& vN = vFaces[f].m_vNormal;
+					bool bNew = true;
+					for (const auto& vK : vNormals)
+					{
+						if (vK.Dot(vN) > 0.999f)
+						{
+							bNew = false;
+							break;
+						}
+					}
+					if (bNew)
+						vNormals.push_back(vN);
+				}
+			};
+
+			// can the projectile physically get there? a cheap hull trace from the muzzle, so impossible points never reach the expensive test
+			auto fReachable = [&](const Vec3& vPoint)
+			{
+				if (F::ProjSim.m_bPhysics)
+					return true;
+				Vec3 vForward, vRight, vUp; Math::AngleVectors(Math::CalcAngle(m_tInfo.m_vLocalEye, vPoint), &vForward, &vRight, &vUp);
+				const Vec3 vMuzzle = m_tInfo.m_vLocalEye + vForward * m_tInfo.m_vOffset.x + vRight * m_tInfo.m_vOffset.y + vUp * m_tInfo.m_vOffset.z;
+				SDK::TraceHull(vMuzzle, vPoint, -m_tInfo.m_vHull, m_tInfo.m_vHull, MASK_SOLID, &filter, &trace);
+				return Math::FullFraction(vMuzzle, vPoint, trace) >= 0.99f;
+			};
+
+			auto fJudge = [&](const Vec3& vOn, size_t iFace, const std::vector<Vec3>& vNormals)
+			{
+				const auto& tFace = vFaces[iFace];
+				const float flEpsilon = SDK::StdRandomInt(0, 1) ? CALC_EPSILON : DIST_EPSILON;
+				Vec3 vPoint = vOn + Vec3(SDK::StdRandomFloat(-flEpsilon, flEpsilon), SDK::StdRandomFloat(-flEpsilon, flEpsilon), SDK::StdRandomFloat(-flEpsilon, flEpsilon));
+				vPoint += tFace.m_vNormal * (m_tInfo.m_vHull + CALC_EPSILON);
+				if (vPoint.DistToSqr(vTargetCenter) > flRadiusSqr)
+					return;
+				if (!std::isfinite(vPoint.x) || !std::isfinite(vPoint.y) || !std::isfinite(vPoint.z))
+					return;
+				if (I::EngineTrace->GetPointContents(vPoint) & MASK_SOLID)
+					return;
+
+				bool bSees = false;
+				for (const auto& vN : vNormals)
+				{
+					if (iTraces >= iCap)
+						return;
+					iTraces++;
+					const Vec3 vStart = vPoint + vN * m_tInfo.m_flNormalOffset;
+					if (I::EngineTrace->GetPointContents(vStart) & MASK_SOLID)
+						continue;
+					SDK::Trace(vStart, vTargetEye, MASK_SHOT, &filter, &trace);
+					if (trace.fraction == 1.f)
+					{
+						bSees = true;
+						break;
+					}
+				}
+				if (!bSees || iTraces >= iCap)
+					return;
+				iTraces++;
+				if (!fReachable(vPoint))
+					return;
+
+				vSplashPoints.emplace_back(vPoint);
+			};
+
+			// corners of faces that hide the target, nearest to its eye first
+			struct Corner_t { float m_flDistanceSqr; size_t m_iFace; size_t m_iVertex; };
+			std::vector<Corner_t> vCorners;
+			for (size_t f = 0; f < vFaces.size(); f++)
+			{
+				if (!vOccluder[f])
+					continue;
+				const auto& vVertices = vFaces[f].m_vVertices;
+				for (size_t i = 0; i < vVertices.size(); i++)
+				{
+					if (vVertices[i].DistToSqr(vTargetCenter) <= flRadiusSqr)
+						vCorners.push_back({ vVertices[i].DistToSqr(vTargetEye), f, i });
+				}
+			}
+			std::sort(vCorners.begin(), vCorners.end(), [](const Corner_t& a, const Corner_t& b) { return a.m_flDistanceSqr < b.m_flDistanceSqr; });
+
+			std::vector<Vec3> vNormals;
+			for (const auto& tCorner : vCorners)
+			{
+				if (iTraces >= iCap)
+					break;
+				const auto& vVertices = vFaces[tCorner.m_iFace].m_vVertices;
+				const size_t n = vVertices.size(), i = tCorner.m_iVertex;
+				const Vec3& v = vVertices[i];
+				const Vec3 d1 = (vVertices[(i + 1) % n] - v).Normalized(), d2 = (vVertices[(i + n - 1) % n] - v).Normalized();
+				fNormalsAt(v, tCorner.m_iFace, vNormals);
+				fJudge(v + (d1 + d2) * 0.1f, tCorner.m_iFace, vNormals);
+				fJudge(v + d1 * 1.f + d2 * 0.1f, tCorner.m_iFace, vNormals);
+				fJudge(v + d2 * 1.f + d1 * 0.1f, tCorner.m_iFace, vNormals);
+				fJudge(v + (d1 + d2) * 1.f, tCorner.m_iFace, vNormals);
+			}
+
+			// then evenly spaced samples along the edges of those faces (the part inside the splash sphere)
+			struct Segment_t { size_t m_iFace; Vec3 m_vA, m_vB; float m_flLength; };
+			std::vector<Segment_t> vSegments; float flTotalLength = 0.f;
+			for (size_t f = 0; f < vFaces.size(); f++)
+			{
+				if (!vOccluder[f])
+					continue;
+				const auto& vVertices = vFaces[f].m_vVertices; const size_t n = vVertices.size();
+				for (size_t i = 0; i < n; i++)
+				{
+					const Vec3& vA = vVertices[i]; const Vec3& vB = vVertices[(i + 1) % n];
+					const Vec3 vD = vB - vA, vM = vA - vTargetCenter;
+					const float a = vD.Dot(vD);
+					if (a <= 1e-6f)
+						continue;
+					const float b = 2.f * vM.Dot(vD), c = vM.Dot(vM) - flRadiusSqr;
+					const float flDisc = b * b - 4.f * a * c;
+					if (flDisc < 0.f)
+						continue;
+					const float flRoot = sqrtf(flDisc);
+					const float t0 = std::clamp((-b - flRoot) / (2.f * a), 0.f, 1.f), t1 = std::clamp((-b + flRoot) / (2.f * a), 0.f, 1.f);
+					if (t1 <= t0)
+						continue;
+					const Vec3 vCA = vA + vD * t0, vCB = vA + vD * t1;
+					vSegments.push_back({ f, vCA, vCB, vCA.DistTo(vCB) });
+					flTotalLength += vSegments.back().m_flLength;
+				}
+			}
+			const float flStep = std::max(4.f, flTotalLength / float(std::max(1, (iCap - iTraces) / 2)));
+			for (const auto& tSegment : vSegments)
+			{
+				if (iTraces >= iCap)
+					break;
+				if (tSegment.m_flLength <= 0.f)
+					continue;
+				fNormalsAt(tSegment.m_vA, tSegment.m_iFace, vNormals);
+				const Vec3 vDir = (tSegment.m_vB - tSegment.m_vA) / tSegment.m_flLength;
+				for (float d = SDK::StdRandomFloat(0.f, flStep); d < tSegment.m_flLength && iTraces < iCap; d += flStep)
+					fJudge(tSegment.m_vA + vDir * d, tSegment.m_iFace, vNormals);
+			}
+		}
+
 		// ray scan: sweep hull traces from the shoot position through a cone around the target,
 	// so narrow gaps are found by aim angle instead of by luck. the pattern is rotated randomly every call,
 	// so repeated ticks cover the gaps between rays. direct (no gravity) projectiles only.
@@ -1183,6 +1355,7 @@ void CAimbotProjectile::CalculateAngle(const Vec3& vLocalPos, const Vec3& vTarge
 
 bool CAimbotProjectile::TestAngle(const Vec3& vPoint, const Vec3& vAngles, int iSimTime, uint8_t iType, uint8_t iFlags, bool bSecondTest)
 {
+	m_tSplashMiss.m_bValid = false;
 	auto pLocal = m_tInfo.m_pLocal;
 	auto pWeapon = m_tInfo.m_pWeapon;
 	auto& tTarget = *m_tInfo.m_pTarget;
@@ -1323,6 +1496,10 @@ bool CAimbotProjectile::TestAngle(const Vec3& vPoint, const Vec3& vAngles, int i
 				CGameTrace trace2 = {};
 				SDK::Trace(trace.endpos + trace.plane.normal * m_tInfo.m_flNormalOffset, tTarget.m_vPos + m_tInfo.m_vTargetEye, MASK_SHOT, &filter, &trace2);
 				bValid = trace2.fraction == 1.f;
+
+				if (!bValid && !bSecondTest)
+					m_tSplashMiss = { true, trace.endpos, trace.plane.normal }; // a near miss worth refining
+
 								// experimental: also accept the shot if the explosion can see the target's body center or feet, not only the eye
 				constexpr bool bExtraLos = false; // set to false to go back to the original eye-only check
 				if (bExtraLos && !bValid)
@@ -1573,6 +1750,7 @@ bool CAimbotProjectile::HandleSplash(SplashHistory_t& mSplashHistory)
 	{
 		iFlags |= CalculateFlagsEnum::Accuracy;
 		float flLowestDistance = std::numeric_limits<float>::max(); bool bFirst = true;
+		int iRefineProbesLeft = !m_tInfo.m_flGravity && !m_tInfo.m_iArmTime ? 40 : 0; // lattice probes per call: raise for more coverage, lower for speed
 		for (auto& tHistory : vSplashHistory)
 		{
 			std::vector<Point_t> vSplashPoints = {};
@@ -1589,6 +1767,56 @@ bool CAimbotProjectile::HandleSplash(SplashHistory_t& mSplashHistory)
 					bReturn = true;
 					flLowestDistance = flDistance;
 				}
+				else if (!bReturn && m_tSplashMiss.m_bValid && tPoint.m_iType == PointTypeEnum::Geometry && iRefineProbesLeft > 0)
+				{
+					// near-miss lattice scan (idea from the Nikogram fork): this candidate's rocket landed in range, but the explosion
+					// could not see the target. the spot that works can be a fraction of a unit away, so scan a fine grid on the surface
+					// around the impact, a few probes per tick, remembering where the scan is. a probe is judged like any other candidate.
+					static const std::vector<std::pair<int, int>> aLattice = []()
+					{
+						std::vector<std::pair<int, int>> v;
+						for (int i = -10; i <= 10; i++)
+						{
+							for (int j = -10; j <= 10; j++)
+								v.emplace_back(i, j);
+						}
+						std::stable_sort(v.begin(), v.end(), [](const auto& a, const auto& b) { return a.first * a.first + a.second * a.second < b.first * b.first + b.second * b.second; });
+						return v;
+					}();
+					constexpr float flLatticeStep = 0.15f; // units between probes, the grid covers about 3 x 3 units
+
+					const int iTarget = m_tInfo.m_pTarget->m_pEntity->entindex(), iTick = I::GlobalVars->tickcount;
+					const Vec3 vImpact = m_tSplashMiss.m_vImpact, vNormal = m_tSplashMiss.m_vNormal;
+					auto& tScan = m_tSplashRefine;
+					if (tScan.m_iTarget != iTarget || tScan.m_vCenter.DistToSqr(vImpact) >= 9.f || iTick - tScan.m_iLastTick > 4)
+					{
+						tScan = {};
+						tScan.m_iTarget = iTarget; tScan.m_vCenter = vImpact; tScan.m_vNormal = vNormal;
+						tScan.m_vU = (fabsf(vNormal.z) < 0.9f ? vNormal.Cross(Vec3(0, 0, 1)) : vNormal.Cross(Vec3(1, 0, 0))).Normalized();
+						tScan.m_vV = vNormal.Cross(tScan.m_vU).Normalized();
+					}
+					tScan.m_iLastTick = iTick;
+
+					while (tScan.m_iNext < int(aLattice.size()) && iRefineProbesLeft > 0)
+					{
+						const int iIndex = tScan.m_iNext++;
+						iRefineProbesLeft--;
+						const auto [i, j] = aLattice[iIndex];
+						const Vec3 vProbe = tScan.m_vCenter + tScan.m_vU * (float(i) * flLatticeStep) + tScan.m_vV * (float(j) * flLatticeStep);
+
+						Solution_t tSolution; CalculateAngle(m_tInfo.m_vLocalEye, vProbe, tHistory.m_iSimtime, tSolution, iFlags, 0);
+						if (tSolution.m_iCalculated == CalculateResultEnum::Bad)
+							continue;
+						if (!HandlePoint(tHistory.m_vOrigin, tHistory.m_iSimtime, tSolution.m_flPitch, tSolution.m_flYaw, tSolution.m_flTime, vProbe, PointTypeEnum::Geometry, iType))
+							continue;
+
+						bReturn = true;
+						flLowestDistance = tHistory.m_vOrigin.DistToSqr(vProbe);
+						tScan.m_iNext = iIndex; // start from this probe again next tick, so a working shot stays steady
+						break;
+					}
+				}
+
 			}
 			if (m_tInfo.m_bIgnoreTiming && iType == PointFlagsEnum::Lob)
 				break;

@@ -101,6 +101,12 @@ private:
 	bool HandleDirect(DirectHistory_t& vDirectHistory);
 	bool HandleSplash(SplashHistory_t& vSplashHistory);
 
+
+	// near miss: the last candidate's rocket landed in range but the explosion could not see the target (lattice scan, see HandleSplash)
+	struct SplashMiss_t { bool m_bValid = false; Vec3 m_vImpact = {}, m_vNormal = {}; } m_tSplashMiss;
+	struct SplashRefine_t { int m_iTarget = -1, m_iLastTick = -1, m_iNext = 0; Vec3 m_vCenter = {}, m_vNormal = {}, m_vU = {}, m_vV = {}; } m_tSplashRefine;
+
+
 	int CanHit(Target_t& tTarget, CTFPlayer* pLocal, CTFWeaponBase* pWeapon, bool bUpdate = true);
 	bool RunMain(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pCmd);
 
